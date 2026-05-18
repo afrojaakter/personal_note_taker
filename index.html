@@ -348,6 +348,28 @@
   }
   .live-transcript.show { display: block; }
   .live-transcript .interim { color: var(--muted); font-style: italic; }
+  /* Processing state — replaces transcript while AI is generating tasks */
+  .live-transcript.processing {
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+    color: var(--accent-strong);
+    font-weight: 500;
+    padding: 12px 14px;
+    font-size: 14px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .dots::after {
+    display: inline-block;
+    content: "...";
+    width: 0;
+    overflow: hidden;
+    vertical-align: bottom;
+    animation: dot-flow 1.4s steps(4) infinite;
+  }
+  @keyframes dot-flow {
+    from { width: 0; }
+    to { width: 1.2em; }
+  }
   .ai-status {
     display: inline-block; margin-left: 6px;
     font-size: 11px; color: var(--accent);
@@ -1033,18 +1055,23 @@ async function addTaskFromInput(rawText) {
   const raw = (rawText !== undefined ? rawText : inp.value).trim();
   if (!raw) return 0;
 
-  // Try AI cleanup first if user has configured a key
+  // Try AI cleanup first if user has configured a key.
+  // Show a prominent loading banner so the wait isn't a mysterious pause.
   let aiResults = null;
   let usedAI = false;
+  const addBtn = document.getElementById('addBtn');
   if (getGeminiKey() && navigator.onLine) {
-    const prevHint = hintEl.textContent;
-    hintEl.textContent = '✨ Thinking…';
-    hintEl.classList.add('live');
+    liveTranscript.innerHTML = '✨ Creating your task<span class="dots"></span>';
+    liveTranscript.classList.add('show', 'processing');
+    addBtn.disabled = true;
+    addBtn.style.opacity = '0.6';
     try {
       aiResults = await geminiParse(raw);
     } finally {
-      hintEl.textContent = prevHint;
-      hintEl.classList.remove('live');
+      liveTranscript.classList.remove('show', 'processing');
+      liveTranscript.innerHTML = '';
+      addBtn.disabled = false;
+      addBtn.style.opacity = '';
     }
   }
 
