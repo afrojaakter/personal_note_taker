@@ -10,7 +10,7 @@
 <link rel="manifest" href="manifest.json" />
 <link rel="icon" type="image/svg+xml" href="icon.svg" />
 <link rel="apple-touch-icon" href="icon.svg" />
-<title>Founder Tasks</title>
+<title>Tasks</title>
 <style>
   :root {
     --bg: #f7f6f3;
@@ -348,6 +348,41 @@
   }
   .live-transcript.show { display: block; }
   .live-transcript .interim { color: var(--muted); font-style: italic; }
+  .ai-status {
+    display: inline-block; margin-left: 6px;
+    font-size: 11px; color: var(--accent);
+    font-weight: 500;
+  }
+  .ai-status.off { color: var(--muted); }
+  /* Setup AI modal */
+  .modal-overlay {
+    position: fixed; inset: 0;
+    background: rgba(20,30,40,0.4);
+    display: none; align-items: center; justify-content: center;
+    z-index: 200; padding: 20px;
+  }
+  .modal-overlay.show { display: flex; }
+  .modal {
+    background: var(--panel); border-radius: 12px;
+    padding: 22px; max-width: 460px; width: 100%;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.15);
+  }
+  .modal h2 { margin: 0 0 6px; font-size: 18px; font-weight: 600; }
+  .modal p { margin: 0 0 12px; color: var(--ink-soft); font-size: 13px; }
+  .modal p a { color: var(--accent); }
+  .modal input[type="password"], .modal input[type="text"] {
+    width: 100%; padding: 10px 12px;
+    border: 1px solid var(--border); border-radius: 8px;
+    font-size: 14px; font-family: inherit;
+    background: #fafafa; outline: none; color: var(--ink);
+  }
+  .modal input:focus { border-color: var(--accent); background: #fff; }
+  .modal-actions {
+    display: flex; gap: 8px; justify-content: flex-end;
+    margin-top: 16px; flex-wrap: wrap;
+  }
+  .modal-actions button { font-size: 13px; padding: 8px 14px; min-height: 38px; }
+  .modal-actions .remove-btn { color: var(--danger); border-color: #f3c1bd; margin-right: auto; }
   @media (max-width: 600px) {
     h1 { font-size: 20px; }
     .wrap { padding: 14px 12px 100px; }
@@ -365,7 +400,7 @@
 <div class="wrap">
   <header class="app-head">
     <div class="title-block">
-      <h1>Founder Tasks</h1>
+      <h1>Tasks</h1>
       <span class="subtle" id="todayLabel"></span>
     </div>
     <div class="auth-controls">
@@ -396,7 +431,7 @@
       <button id="addBtn" class="primary">Add</button>
     </div>
     <div class="live-transcript" id="liveTranscript"></div>
-    <div class="hint" id="hint">Brain-dump tip: tap the mic and talk continuously. Pause as long as you want — finish a task with a period or words like "and then" / "also". I'll split your speech, detect dates, and pick a category. Sign in to sync across devices.</div>
+    <div class="hint" id="hint">Brain-dump tip: tap the mic and talk continuously. Pause as long as you want — finish a task with a period or words like "and then" / "also". I'll split your speech, detect dates, and pick a category. Sign in to sync across devices.<span class="ai-status" id="aiStatus"></span></div>
   </div>
 
   <div class="views" role="tablist">
@@ -422,11 +457,27 @@
     <button id="importBtn">Import</button>
     <input type="file" id="importFile" accept="application/json" style="display:none" />
     &nbsp;·&nbsp;
+    <button id="setupAiBtn">Setup AI</button>
+    &nbsp;·&nbsp;
     <button id="installBtn" style="display:none">Install app</button>
   </div>
 </div>
 
 <div class="toast" id="toast"></div>
+
+<div class="modal-overlay" id="aiModalOverlay">
+  <div class="modal" role="dialog" aria-labelledby="aiModalTitle">
+    <h2 id="aiModalTitle">✨ AI Cleanup with Gemini</h2>
+    <p>Paste your free Gemini API key to enable AI-powered task cleanup. The key stays in this browser only — nothing is sent to the public repo.</p>
+    <p>Don't have a key? Get one in 30 seconds at <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener">aistudio.google.com/app/apikey</a>. The free tier is more than enough for personal use.</p>
+    <input type="password" id="aiKeyInput" placeholder="AIza…" autocomplete="off" spellcheck="false" />
+    <div class="modal-actions">
+      <button class="remove-btn" id="aiRemoveBtn">Remove key</button>
+      <button id="aiCancelBtn">Cancel</button>
+      <button class="primary" id="aiSaveBtn">Save</button>
+    </div>
+  </div>
+</div>
 
 <!-- ====================================================================
   Firebase cloud sync (module). Exposes window.cloudSync for the main
@@ -770,14 +821,65 @@ function parseTaskText(raw) {
 
   text = text.replace(/\bevery\b/gi, ' ');
 
-  let title = text.replace(/\s+/g, ' ').trim();
-  title = title.replace(/^(?:and|then|also|plus|next|so|oh|um+|umm+)[\s,]+/i, '');
-  title = title.replace(/^(remind me to |remember to |i need to |i have to |i want to |i should |to |gotta |got to )/i, '');
-  title = title.replace(/\s+(by|on|at|for|in|to|with|from|until|before|after|around)\s*$/i, '').trim();
-  title = title.replace(/^[,.;:\s]+|[,.;:\s]+$/g, '');
+  let title = cleanTitle(text);
+  return { title: title || raw.trim(), due, hasTime, recurrence };
+}
+
+/* Aggressive title cleanup — strips conversational fillers, hedging,
+   leading interjections, common preamble verbs, and trailing hedges.
+   Designed to make casual speech-to-text feel like a real task title. */
+function cleanTitle(rawText) {
+  let title = (rawText || '').replace(/\s+/g, ' ').trim();
+  if (!title) return '';
+
+  // Apply repeatedly so stacked fillers ("oh man so basically I really should...")
+  // all get peeled away.
+  for (let pass = 0; pass < 6; pass++) {
+    const before = title;
+
+    // Leading interjections, vocatives, throat-clearing
+    title = title.replace(
+      /^(?:oh(?:\s+man| boy| god| wow)?|hey|hi|ok|okay|alright|right|well|yeah|yes|yep|nope|listen|look|see|wait|so|now|um+|umm+|uh+|er+|hmm+|like)[,\s]+/i,
+      ''
+    );
+    // Connectors that survived sentence splitting
+    title = title.replace(/^(?:and|then|also|plus|next)[,\s]+/i, '');
+    // Hedging / epistemic adverbs at start
+    title = title.replace(
+      /^(?:i think(?:\s+(?:that|maybe|i))?|i guess|i believe|i feel like|i suppose|it seems(?:\s+like)?|maybe|perhaps|probably|actually|literally|basically|honestly|seriously|really)[,\s]+/i,
+      ''
+    );
+    // Preamble verbs that introduce the actual task
+    title = title.replace(
+      /^(?:remind me to|remember to|don'?t forget to|make sure (?:to|i)|i need to|i have to|i want to|i should(?:\s+probably)?|i must|i'?ll|i will|let me|let'?s|to|gotta|got to|going to|gonna|need to|want to|have to|should|must|will)\s+/i,
+      ''
+    );
+
+    if (title === before) break;
+  }
+
+  // Strip filler phrases anywhere (not just leading)
+  title = title.replace(
+    /\b(?:you know|kind of|kinda|sort of|sorta|i mean|or so|or whatever|or something(?:\s+like that)?)\b[,]?/gi,
+    ' '
+  );
+
+  // Strip orphan trailing prepositions left over after date extraction
+  title = title.replace(
+    /\s+(?:by|on|at|for|in|to|with|from|until|before|after|around|about)\s*$/i,
+    ''
+  );
+
+  // Trailing fillers
+  title = title.replace(/\s*(?:um+|uh+|hmm+|i guess|you know)\s*[.,!?]?\s*$/i, '');
+
+  // Normalize whitespace and edge punctuation
+  title = title.replace(/\s+/g, ' ').replace(/^[,.;:\s]+|[,.;:\s]+$/g, '').trim();
+
+  // Capitalize first letter
   if (title.length > 0) title = title[0].toUpperCase() + title.slice(1);
 
-  return { title: title || raw.trim(), due, hasTime, recurrence };
+  return title;
 }
 
 function splitBrainDump(text) {
@@ -790,35 +892,216 @@ function splitBrainDump(text) {
 }
 
 /* =========================================================
+   OPTIONAL AI CLEANUP — Gemini 2.0 Flash, BYOK
+   Key is stored only in this browser. If absent / offline /
+   the API errors out, we silently fall back to the regex parser.
+   ========================================================= */
+const GEMINI_KEY = 'gemini_api_key_v1';
+function getGeminiKey() { return localStorage.getItem(GEMINI_KEY) || ''; }
+function setGeminiKey(k) {
+  if (k && k.trim()) localStorage.setItem(GEMINI_KEY, k.trim());
+  else localStorage.removeItem(GEMINI_KEY);
+  updateAiStatus();
+}
+function updateAiStatus() {
+  const el = document.getElementById('aiStatus');
+  if (!el) return;
+  if (getGeminiKey()) {
+    el.textContent = ' ✨ AI cleanup on';
+    el.classList.remove('off');
+  } else {
+    el.textContent = '';
+    el.classList.add('off');
+  }
+}
+
+async function geminiParse(rawText) {
+  const key = getGeminiKey();
+  if (!key) return null;
+  if (!navigator.onLine) return null;
+
+  const now = new Date();
+  const tz = -now.getTimezoneOffset() / 60;
+  const tzStr = (tz >= 0 ? '+' : '-') + String(Math.abs(tz)).padStart(2, '0') + ':00';
+  const todayIso = now.toISOString().slice(0, 10);
+  const todayHuman = now.toLocaleDateString(undefined, {
+    weekday: 'long', month: 'long', day: 'numeric', year: 'numeric'
+  });
+
+  const systemPrompt = `You extract individual tasks from a solo founder's speech-to-text input.
+
+Today is ${todayHuman} (${todayIso}). Local timezone offset: ${tzStr}.
+
+For each task return these fields:
+- title: clean, action-oriented title. Remove filler words ("um", "uh", "you know", "I think", "basically", "actually", "hey", "so", "oh man", "I should probably", "I gotta", "I need to", etc.). Use imperative voice when natural. Keep names, places, deadlines, important context. Be concise but not cryptic.
+- due: ISO 8601 datetime string in local time (e.g. "2026-05-20T17:00:00") or null. Parse phrases like "tomorrow", "Friday at 5pm", "next Monday", "in 3 days", "tonight", "this evening".
+- hasTime: true if a specific time was mentioned, false if only a date.
+- recurrence: "daily", "weekly", "monthly", or null. Trigger words: "every day"/"daily", "every Monday"/"weekly", "every month"/"monthly".
+- category: one of:
+   "build" (coding, design, shipping product, MVP, deploy, fix bug)
+   "customer" (sales, outreach, retailers, prospects, demos, B2B leads — furniture retailers fit here)
+   "research" (market analysis, competitor study, reading reports)
+   "network" (coffee chats, intros, casual networking)
+   "mentor" (mentor meetings, advisor calls, finding mentors)
+   "investor" (VCs, pitching, fundraising, angel calls, deck prep)
+   "event" (meetups, conferences, RSVPs, attending networking events — e.g. "Austin Startup Week")
+   "general" (anything else)
+- location: only set if event-like and a location was mentioned (e.g. "Capital Factory"), otherwise "".
+- url: only set if user mentioned a URL, otherwise "".
+
+Examples:
+Input: "oh man I really should probably reach out to that furniture place in north Austin tomorrow about a wholesale deal"
+Output: [{"title":"Reach out to furniture place in north Austin about wholesale deal","due":"${todayIso === '2026-05-18' ? '2026-05-19' : todayIso}T09:00:00","hasTime":false,"recurrence":null,"category":"customer","location":"","url":""}]
+
+Input: "remind me to RSVP to the Austin Startup Week event at Capital Factory next Tuesday at 6pm and also weekly mentor call every Wednesday at 10am"
+Output: [{"title":"RSVP to Austin Startup Week event","due":"2026-05-26T18:00:00","hasTime":true,"recurrence":null,"category":"event","location":"Capital Factory","url":""},{"title":"Weekly mentor call","due":"2026-05-20T10:00:00","hasTime":true,"recurrence":"weekly","category":"mentor","location":"","url":""}]
+
+If the input is one task, return an array with one item. Return ONLY the JSON array.
+
+Input: ${JSON.stringify(rawText)}`;
+
+  try {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(key)}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: systemPrompt }] }],
+        generationConfig: {
+          temperature: 0.2,
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                title:      { type: 'string' },
+                due:        { type: 'string', nullable: true },
+                hasTime:    { type: 'boolean' },
+                recurrence: { type: 'string', enum: ['daily','weekly','monthly',''], nullable: true },
+                category:   { type: 'string', enum: ['build','customer','research','network','mentor','investor','event','general'] },
+                location:   { type: 'string' },
+                url:        { type: 'string' }
+              },
+              required: ['title','category']
+            }
+          }
+        }
+      })
+    });
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      console.warn('Gemini error', res.status, errText.slice(0, 200));
+      if (res.status === 400 || res.status === 403) {
+        showToast('AI key invalid — falling back to regex');
+      } else if (res.status === 429) {
+        showToast('AI rate-limited — falling back to regex');
+      }
+      return null;
+    }
+    const data = await res.json();
+    const txt = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!txt) return null;
+    const parsed = JSON.parse(txt);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch (e) {
+    console.warn('Gemini call failed:', e);
+    return null;
+  }
+}
+
+function normalizeRecurrence(r) {
+  if (r === 'daily' || r === 'weekly' || r === 'monthly') return r;
+  return null;
+}
+function normalizeCategory(c, fallback) {
+  return (c && CATEGORIES[c]) ? c : (fallback || 'general');
+}
+function normalizeDueIso(d) {
+  if (!d) return null;
+  // Accept Date-parsable strings; coerce to ISO. If invalid, drop.
+  const dt = new Date(d);
+  if (isNaN(dt.getTime())) return null;
+  return dt.toISOString();
+}
+
+/* =========================================================
    TASK OPERATIONS
    ========================================================= */
-function addTaskFromInput(rawText) {
+async function addTaskFromInput(rawText) {
   const inp = document.getElementById('taskInput');
   const raw = (rawText !== undefined ? rawText : inp.value).trim();
   if (!raw) return 0;
-  const segments = splitBrainDump(raw);
-  const segs = segments.length > 1 ? segments : [raw];
+
+  // Try AI cleanup first if user has configured a key
+  let aiResults = null;
+  let usedAI = false;
+  if (getGeminiKey() && navigator.onLine) {
+    const prevHint = hintEl.textContent;
+    hintEl.textContent = '✨ Thinking…';
+    hintEl.classList.add('live');
+    try {
+      aiResults = await geminiParse(raw);
+    } finally {
+      hintEl.textContent = prevHint;
+      hintEl.classList.remove('live');
+    }
+  }
+
+  // Normalize either AI output or regex output to a uniform shape
+  let segs;
+  if (aiResults && aiResults.length) {
+    usedAI = true;
+    segs = aiResults.map(p => {
+      const title = cleanTitle(p.title || raw);
+      return {
+        title: title || raw,
+        due: normalizeDueIso(p.due),
+        hasTime: !!p.hasTime,
+        recurrence: normalizeRecurrence(p.recurrence),
+        category: normalizeCategory(p.category, detectCategory(title || raw)),
+        location: (p.location || '').toString().trim(),
+        url: (p.url || '').toString().trim()
+      };
+    });
+  } else {
+    const segments = splitBrainDump(raw);
+    const rawSegs = segments.length > 1 ? segments : [raw];
+    segs = rawSegs.map(seg => {
+      const parsed = parseTaskText(seg);
+      return {
+        title: parsed.title,
+        due: parsed.due,
+        hasTime: parsed.hasTime,
+        recurrence: parsed.recurrence,
+        category: detectCategory(parsed.title),
+        location: '',
+        url: ''
+      };
+    });
+  }
+
   let added = 0;
   segs.forEach(seg => {
-    const parsed = parseTaskText(seg);
-    const cat = detectCategory(parsed.title);
+    if (!seg.title) return;
     const task = {
       id: uid(),
-      title: parsed.title,
+      title: seg.title,
       notes: '',
       status: 'todo',
       createdAt: new Date().toISOString(),
-      due: parsed.due,
-      hasTime: parsed.hasTime,
+      due: seg.due,
+      hasTime: seg.hasTime,
       notified: false,
-      category: cat,
-      location: '',
-      url: '',
-      recurrence: parsed.recurrence
+      category: seg.category,
+      location: seg.location,
+      url: seg.url,
+      recurrence: seg.recurrence
     };
     tasks.push(task);
     added++;
   });
+
   saveTasks();
   if (rawText === undefined) inp.value = '';
   const switched = added > 1 && currentView !== 'all' && currentView !== 'week';
@@ -828,14 +1111,17 @@ function addTaskFromInput(rawText) {
     updateTabs();
   }
   render();
-  if (added > 1) showToast(switched ? `Added ${added} tasks — showing All` : `Added ${added} tasks`);
+  const aiTag = usedAI ? ' ✨' : '';
+  if (added > 1) showToast(switched
+    ? `Added ${added} tasks${aiTag} — showing All`
+    : `Added ${added} tasks${aiTag}`);
   else if (added === 1) {
     const t = tasks[tasks.length - 1];
     if (t.due) {
       const d = new Date(t.due);
-      showToast(`Added · ${fmtDateShort(d)}${t.hasTime ? ' at ' + fmtTime(d) : ''}`);
+      showToast(`Added · ${fmtDateShort(d)}${t.hasTime ? ' at ' + fmtTime(d) : ''}${aiTag}`);
     } else {
-      showToast('Added');
+      showToast(`Added${aiTag}`);
     }
   }
   return added;
@@ -1378,6 +1664,11 @@ function startListening() {
   if (!SR) return;
   if (!recognition) recognition = setupRecognition();
   finalBuffer = '';
+  // Tracks the most recent interim (un-finalized) transcript so we can
+  // promote it to the final buffer before the browser auto-stops the
+  // recognizer on a pause. Without this, mid-sentence text vanishes
+  // whenever the browser segments speech across an automatic restart.
+  let pendingInterim = '';
   listening = true;
   micBtn.classList.add('recording');
   liveTranscript.classList.add('show');
@@ -1396,6 +1687,16 @@ function startListening() {
   };
   recognition.onend = () => {
     if (listening) {
+      // Browser auto-stopped (silence cutoff). Promote any pending interim
+      // text to the final buffer before restarting — otherwise it vanishes
+      // because the new recognition session has its own results array.
+      if (pendingInterim.trim()) {
+        finalBuffer += pendingInterim.trim() + ' ';
+        pendingInterim = '';
+        // Reflect the recovered text immediately
+        liveTranscript.innerHTML = escapeHtml(finalBuffer.trim());
+        document.getElementById('taskInput').value = finalBuffer.trim();
+      }
       try { recognition.start(); }
       catch (err) {
         setTimeout(() => { if (listening) { try { recognition.start(); } catch(e) {} } }, 200);
@@ -1409,6 +1710,7 @@ function startListening() {
       if (event.results[i].isFinal) finalBuffer += t + ' ';
       else interim += t;
     }
+    pendingInterim = interim;
     liveTranscript.innerHTML =
       escapeHtml(finalBuffer.trim()) +
       (interim ? ' <span class="interim">' + escapeHtml(interim) + '</span>' : '');
@@ -1621,9 +1923,54 @@ window.addEventListener('online', () => { if (currentUser) setSync('syncing'); }
 window.addEventListener('offline', () => { setSync('offline'); });
 
 /* =========================================================
+   SETUP AI MODAL
+   ========================================================= */
+const aiModalOverlay = document.getElementById('aiModalOverlay');
+const aiKeyInput = document.getElementById('aiKeyInput');
+function openAiModal() {
+  aiKeyInput.value = getGeminiKey();
+  aiModalOverlay.classList.add('show');
+  setTimeout(() => aiKeyInput.focus(), 50);
+}
+function closeAiModal() {
+  aiModalOverlay.classList.remove('show');
+  aiKeyInput.value = '';
+}
+document.getElementById('setupAiBtn').addEventListener('click', openAiModal);
+document.getElementById('aiCancelBtn').addEventListener('click', closeAiModal);
+document.getElementById('aiSaveBtn').addEventListener('click', () => {
+  const v = aiKeyInput.value.trim();
+  if (!v) {
+    showToast('Paste a key or click Remove key');
+    return;
+  }
+  if (!/^AIza[\w-]{20,}$/.test(v)) {
+    if (!confirm('That doesn\'t look like a typical Gemini API key (should start with "AIza…"). Save anyway?')) return;
+  }
+  setGeminiKey(v);
+  closeAiModal();
+  showToast('✨ AI cleanup enabled');
+});
+document.getElementById('aiRemoveBtn').addEventListener('click', () => {
+  if (!getGeminiKey()) { closeAiModal(); return; }
+  if (confirm('Remove your Gemini API key from this browser? Brain dumps will use the regex parser only.')) {
+    setGeminiKey('');
+    closeAiModal();
+    showToast('AI key removed');
+  }
+});
+aiModalOverlay.addEventListener('click', (e) => {
+  if (e.target === aiModalOverlay) closeAiModal();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && aiModalOverlay.classList.contains('show')) closeAiModal();
+});
+
+/* =========================================================
    INIT
    ========================================================= */
 updateTabs();
+updateAiStatus();
 render();
 </script>
 </body>
