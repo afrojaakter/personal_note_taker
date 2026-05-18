@@ -539,8 +539,11 @@ const CAT_KEYS = Object.keys(CATEGORIES);
    ========================================================= */
 const STORAGE_KEY = 'founder_tasks_v2';
 const FILTER_KEY = 'founder_tasks_filter';
+const VIEW_KEY = 'founder_tasks_view';
 let tasks = loadTasksLocal();
-let currentView = 'today';
+const VALID_VIEWS = ['today','week','month','timeline','events','all'];
+const savedView = localStorage.getItem(VIEW_KEY);
+let currentView = VALID_VIEWS.includes(savedView) ? savedView : 'today';
 let categoryFilter = localStorage.getItem(FILTER_KEY) || 'all';
 let currentUser = null;       // Firebase user when signed in
 let unsubscribeSnapshot = null;
@@ -819,7 +822,11 @@ function addTaskFromInput(rawText) {
   saveTasks();
   if (rawText === undefined) inp.value = '';
   const switched = added > 1 && currentView !== 'all' && currentView !== 'week';
-  if (switched) { currentView = 'all'; updateTabs(); }
+  if (switched) {
+    currentView = 'all';
+    localStorage.setItem(VIEW_KEY, currentView);
+    updateTabs();
+  }
   render();
   if (added > 1) showToast(switched ? `Added ${added} tasks — showing All` : `Added ${added} tasks`);
   else if (added === 1) {
@@ -1093,7 +1100,34 @@ function renderToday(container) {
     container.appendChild(makeList(overdue.sort(sortByDue), ''));
   }
   container.appendChild(heading('Today'));
-  container.appendChild(makeList(today.sort(sortByDue), doing.length ? '' : 'Nothing else due today.'));
+  if (today.length) {
+    container.appendChild(makeList(today.sort(sortByDue), ''));
+  } else {
+    // Helpful empty state: if there are upcoming/unscheduled tasks, mention them
+    const upcoming = all.filter(t => t.status !== 'done' && t.due && new Date(t.due) > startOfDay(now)).length;
+    const empty = document.createElement('div');
+    empty.className = 'empty';
+    if (doing.length) {
+      empty.textContent = 'Nothing else due today.';
+    } else if (upcoming || unscheduled.length) {
+      const bits = [];
+      if (upcoming) bits.push(`${upcoming} upcoming`);
+      if (unscheduled.length) bits.push(`${unscheduled.length} unscheduled`);
+      empty.innerHTML = `Nothing due today. You have <strong>${bits.join(' and ')}</strong>.<br>
+        <button id="jumpAllBtn" style="margin-top:10px; background:var(--accent-soft); color:var(--accent-strong); border:1px solid var(--accent-soft); padding:6px 14px; min-height:auto; font-size:13px;">See all tasks →</button>`;
+      setTimeout(() => {
+        const b = document.getElementById('jumpAllBtn');
+        if (b) b.addEventListener('click', () => {
+          currentView = 'all';
+          localStorage.setItem(VIEW_KEY, currentView);
+          updateTabs(); render();
+        });
+      }, 0);
+    } else {
+      empty.textContent = 'All clear — no tasks at all.';
+    }
+    container.appendChild(empty);
+  }
   if (unscheduled.length) {
     container.appendChild(heading('Unscheduled'));
     container.appendChild(makeList(unscheduled.sort(sortByDue), ''));
@@ -1165,7 +1199,7 @@ function renderMonth(container) {
       div.style.background = cat.color;
       div.textContent = t.title;
       div.title = t.title + (t.notes ? '\n' + t.notes : '');
-      div.addEventListener('click', () => { currentView = 'all'; updateTabs(); render(); });
+      div.addEventListener('click', () => { currentView = 'all'; localStorage.setItem(VIEW_KEY, currentView); updateTabs(); render(); });
       cell.appendChild(div);
     });
     if (todays.length > 3) {
@@ -1269,6 +1303,7 @@ function updateTabs() {
 document.querySelectorAll('.view-tab').forEach(btn => {
   btn.addEventListener('click', () => {
     currentView = btn.dataset.view;
+    localStorage.setItem(VIEW_KEY, currentView);
     updateTabs();
     render();
   });
@@ -1588,6 +1623,7 @@ window.addEventListener('offline', () => { setSync('offline'); });
 /* =========================================================
    INIT
    ========================================================= */
+updateTabs();
 render();
 </script>
 </body>
